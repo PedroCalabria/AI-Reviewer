@@ -86,9 +86,9 @@ export default function ActivityPage() {
       </div>
 
       <div style={{ borderTop: "1px solid var(--border-subtle)" }}>
-        {visibleLog.map((entry, i) => (
+        {visibleLog.map((entry) => (
           <div
-            key={`${entry.time}-${entry.text}-${i}`}
+            key={entry.id}
             style={{
               display: "grid",
               gridTemplateColumns: "auto auto minmax(0, 1fr)",

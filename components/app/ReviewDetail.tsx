@@ -4,7 +4,6 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ds/Badge";
 import { Button } from "@/components/ds/Button";
-import { TEMPLATES } from "@/lib/data";
 import { useDesk } from "@/lib/store";
 import type { Review } from "@/lib/types";
 
@@ -26,7 +25,9 @@ const KEEP_IN_MIND = [
 export function ReviewDetail({ id }: { id: string }) {
   const router = useRouter();
   const {
+    data,
     state,
+    visibleReviews,
     reviewById,
     neighbours,
     approve,
@@ -68,11 +69,40 @@ export function ReviewDetail({ id }: { id: string }) {
   const { index, prev, next } = neighbours(review.id);
   const done = review.status !== "needs";
   const regenerating = state.regeneratingId === review.id;
+  const aiPaused = !data.ai.configured || data.ai.exhausted;
 
   const publish = () => {
     if (writing) editDraft(review.id, ownText);
     approve(review.id);
     router.push("/inbox");
+  };
+
+  const skip = () => {
+    router.push("/inbox");
+    showToast(`Skipped ${review.name} — still in the queue`);
+  };
+
+  const writeYourOwnProps = {
+    review,
+    writing,
+    ownText,
+    copied,
+    onStartWriting: () => setWriting(true),
+    onStopWriting: () => {
+      setWriting(false);
+      setOwnText("");
+    },
+    onOwnTextChange: setOwnText,
+    onCopy: () => {
+      void navigator.clipboard?.writeText(review.text || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    },
+    onMarkHandled: () => {
+      markHandled(review.id);
+      router.push("/inbox");
+    },
+    onPublish: publish,
   };
 
   return (
@@ -91,7 +121,9 @@ export function ReviewDetail({ id }: { id: string }) {
           Back to inbox
         </Button>
         <span style={{ font: "var(--type-meta)", color: "var(--text-muted)" }}>
-          {`Review ${index + 1} of ${state.reviews.length} · ${review.meta}`}
+          {index >= 0
+            ? `Review ${index + 1} of ${visibleReviews.length} · ${review.meta}`
+            : review.meta}
         </span>
         <span style={{ marginLeft: "auto", display: "flex", gap: "var(--space-2)" }}>
           <Button
@@ -124,12 +156,17 @@ export function ReviewDetail({ id }: { id: string }) {
           }}
         >
           {done ? (
-            <DonePane review={review} />
+            <DonePane
+              review={review}
+              actorName={data.account.name || data.account.email}
+              publishesForReal={data.sync.publishesForReal}
+            />
           ) : review.lane === "generated" ? (
             <GeneratedPane
               review={review}
               regenerating={regenerating}
               voice={state.tone}
+              aiPaused={aiPaused}
               showDiff={showDiff}
               onToggleDiff={() => setShowDiff((v) => !v)}
               regenTone={regenTone}
@@ -137,10 +174,7 @@ export function ReviewDetail({ id }: { id: string }) {
               onEdit={(text) => editDraft(review.id, text)}
               onRegenerate={() => regenerate(review.id, regenTone)}
               onPublish={publish}
-              onSkip={() => {
-                router.push("/inbox");
-                showToast(`Skipped ${review.name} — still in the queue`);
-              }}
+              onSkip={skip}
             />
           ) : review.lane === "template" ? (
             <TemplatePane
@@ -148,34 +182,18 @@ export function ReviewDetail({ id }: { id: string }) {
               onEdit={(text) => editDraft(review.id, text)}
               onCycle={() => cycleTemplate(review.id)}
               onPublish={publish}
-              onSkip={() => {
-                router.push("/inbox");
-                showToast(`Skipped ${review.name} — still in the queue`);
-              }}
+              onSkip={skip}
+            />
+          ) : review.lane === "manual" ? (
+            <ManualPane {...writeYourOwnProps} />
+          ) : review.lane === "waiting" ? (
+            <WaitingPane
+              {...writeYourOwnProps}
+              configured={data.ai.configured}
+              resetsAt={data.ai.resetsAt}
             />
           ) : (
-            <EscalatedPane
-              review={review}
-              writing={writing}
-              ownText={ownText}
-              copied={copied}
-              onStartWriting={() => setWriting(true)}
-              onStopWriting={() => {
-                setWriting(false);
-                setOwnText("");
-              }}
-              onOwnTextChange={setOwnText}
-              onCopy={() => {
-                void navigator.clipboard?.writeText(review.text || "");
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1600);
-              }}
-              onMarkHandled={() => {
-                markHandled(review.id);
-                router.push("/inbox");
-              }}
-              onPublish={publish}
-            />
+            <EscalatedPane {...writeYourOwnProps} />
           )}
         </div>
       </div>
@@ -299,6 +317,19 @@ function ReviewPane({ review }: { review: Review }) {
         </div>
       )}
 
+      {review.language ? (
+        <div
+          style={{
+            marginTop: "var(--space-5)",
+            font: "var(--type-meta)",
+            color: "var(--text-faint)",
+          }}
+        >
+          Written in {languageName(review.language)}. Replies are drafted in the
+          same language.
+        </div>
+      ) : null}
+
       {review.themes.length > 0 ? (
         <div
           style={{
@@ -345,6 +376,16 @@ function ReviewPane({ review }: { review: Review }) {
   );
 }
 
+function languageName(tag: string): string {
+  try {
+    return (
+      new Intl.DisplayNames(["en"], { type: "language" }).of(tag) ?? tag
+    );
+  } catch {
+    return tag;
+  }
+}
+
 function draftBoxStyle(edited: boolean, dimmed: boolean) {
   return {
     marginTop: "var(--space-4)",
@@ -372,6 +413,7 @@ function GeneratedPane({
   review,
   regenerating,
   voice,
+  aiPaused,
   showDiff,
   onToggleDiff,
   regenTone,
@@ -384,6 +426,7 @@ function GeneratedPane({
   review: Review;
   regenerating: boolean;
   voice: string;
+  aiPaused: boolean;
   showDiff: boolean;
   onToggleDiff: () => void;
   regenTone: string;
@@ -393,7 +436,7 @@ function GeneratedPane({
   onPublish: () => void;
   onSkip: () => void;
 }) {
-  const hasAdjust = !!review.adjust && !review.edited;
+  const adjustments = review.edited ? [] : review.adjustments;
 
   return (
     <div>
@@ -408,7 +451,7 @@ function GeneratedPane({
           ? "Edited by you"
           : regenerating
             ? "Drafting"
-            : "Drafted by AI · 2 minutes ago"}
+            : `Drafted by AI · ${review.draftedAgo ?? "just now"}`}
       </div>
 
       <div style={draftBoxStyle(review.edited, regenerating)}>
@@ -441,7 +484,7 @@ function GeneratedPane({
         </div>
       </div>
 
-      {hasAdjust && review.adjust ? (
+      {adjustments.length > 0 ? (
         <>
           <div
             style={{
@@ -451,11 +494,17 @@ function GeneratedPane({
               padding: "var(--space-4) var(--space-5)",
             }}
           >
-            <span
-              style={{ font: "var(--type-body-sm)", color: "var(--text-primary)" }}
-            >
-              {review.adjust.note}{" "}
-            </span>
+            {adjustments.map((adjustment, i) => (
+              <span
+                key={`${adjustment.rule}-${i}`}
+                style={{
+                  font: "var(--type-body-sm)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                {adjustment.note}{" "}
+              </span>
+            ))}
             <button
               type="button"
               onClick={onToggleDiff}
@@ -481,42 +530,66 @@ function GeneratedPane({
                 border: "1px solid var(--border-subtle)",
                 borderRadius: "var(--radius-md)",
                 padding: "var(--space-5)",
+                display: "grid",
+                gap: "var(--space-6)",
               }}
             >
-              <div
-                style={{
-                  font: "var(--type-label)",
-                  color: "var(--text-muted)",
-                  letterSpacing: "var(--tracking-snug)",
-                }}
-              >
-                Removed · {review.adjust.rule}
-              </div>
-              <div
-                style={{
-                  marginTop: "var(--space-3)",
-                  font: "var(--type-body-sm)",
-                  textDecoration: "line-through",
-                  color: "var(--text-muted)",
-                }}
-              >
-                {review.adjust.removed}
-              </div>
-              <div
-                style={{
-                  marginTop: "var(--space-6)",
-                  font: "var(--type-label)",
-                  color: "var(--text-muted)",
-                  letterSpacing: "var(--tracking-snug)",
-                }}
-              >
-                Written instead
-              </div>
-              <div
-                style={{ marginTop: "var(--space-3)", font: "var(--type-body-sm)" }}
-              >
-                {review.adjust.replaced}
-              </div>
+              {adjustments.map((adjustment, i) => (
+                <div key={`${adjustment.rule}-diff-${i}`}>
+                  <div
+                    style={{
+                      font: "var(--type-label)",
+                      color: "var(--text-muted)",
+                      letterSpacing: "var(--tracking-snug)",
+                    }}
+                  >
+                    Removed · {adjustment.ruleLabel}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: "var(--space-3)",
+                      font: "var(--type-body-sm)",
+                      textDecoration: "line-through",
+                      color: "var(--text-muted)",
+                    }}
+                  >
+                    {adjustment.removed}
+                  </div>
+                  {adjustment.replaced ? (
+                    <>
+                      <div
+                        style={{
+                          marginTop: "var(--space-5)",
+                          font: "var(--type-label)",
+                          color: "var(--text-muted)",
+                          letterSpacing: "var(--tracking-snug)",
+                        }}
+                      >
+                        Written instead
+                      </div>
+                      <div
+                        style={{
+                          marginTop: "var(--space-3)",
+                          font: "var(--type-body-sm)",
+                        }}
+                      >
+                        {adjustment.replaced}
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        marginTop: "var(--space-4)",
+                        font: "var(--type-body-sm)",
+                        color: "var(--text-muted)",
+                      }}
+                    >
+                      Nothing was written in its place — the sentence was
+                      dropped.
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           ) : null}
         </>
@@ -538,7 +611,12 @@ function GeneratedPane({
           variant="outline"
           size="md"
           onClick={onRegenerate}
-          disabled={regenerating}
+          disabled={regenerating || aiPaused}
+          title={
+            aiPaused
+              ? "AI drafts are paused. The draft above is unaffected."
+              : undefined
+          }
         >
           {regenerating ? "Regenerating" : "Regenerate"}
         </Button>
@@ -547,13 +625,14 @@ function GeneratedPane({
           <select
             value={regenTone}
             onChange={(e) => onRegenToneChange(e.target.value)}
+            disabled={aiPaused}
             style={{
               border: "1px solid var(--border-strong)",
               borderRadius: "var(--radius-control)",
               padding: "11px 16px",
               font: "var(--type-label)",
               background: "transparent",
-              cursor: "pointer",
+              cursor: aiPaused ? "not-allowed" : "pointer",
             }}
           >
             {TONE_CHOICES.map((tone) => (
@@ -567,6 +646,18 @@ function GeneratedPane({
           Skip
         </Button>
       </div>
+
+      <p
+        style={{
+          margin: "var(--space-6) 0 0",
+          maxWidth: "48em",
+          font: "var(--type-body-sm)",
+          color: "var(--text-muted)",
+        }}
+      >
+        Every regeneration goes through the same guardrails as the first draft.
+        Nothing reaches this box unchecked.
+      </p>
     </div>
   );
 }
@@ -619,7 +710,7 @@ function TemplatePane({
             color: "var(--text-muted)",
           }}
         >
-          <span>{`Variant ${review.variant + 1} of ${TEMPLATES.length}`}</span>
+          <span>{`Variant ${review.variant + 1} of ${review.variantCount}`}</span>
           <button
             type="button"
             onClick={onCycle}
@@ -665,25 +756,15 @@ function TemplatePane({
           color: "var(--text-muted)",
         }}
       >
-        Ratings with no text get a rotating thank-you. No AI runs, so these cost
-        nothing and can be cleared in bulk from the inbox.
+        Ratings of four stars or more with little or nothing written get a
+        rotating thank-you. No AI runs, so these cost nothing and can be cleared
+        in bulk from the inbox.
       </p>
     </div>
   );
 }
 
-function EscalatedPane({
-  review,
-  writing,
-  ownText,
-  copied,
-  onStartWriting,
-  onStopWriting,
-  onOwnTextChange,
-  onCopy,
-  onMarkHandled,
-  onPublish,
-}: {
+type WriteYourOwnProps = {
   review: Review;
   writing: boolean;
   ownText: string;
@@ -694,7 +775,11 @@ function EscalatedPane({
   onCopy: () => void;
   onMarkHandled: () => void;
   onPublish: () => void;
-}) {
+};
+
+function EscalatedPane(props: WriteYourOwnProps) {
+  const { review } = props;
+
   return (
     <div>
       <div
@@ -728,35 +813,244 @@ function EscalatedPane({
         >
           {review.escalationCopy}
         </div>
+
+        {review.trigger ? (
+          <div
+            style={{
+              marginTop: "var(--space-8)",
+              paddingTop: "var(--space-6)",
+              borderTop: "1px solid var(--border-inverse)",
+            }}
+          >
+            <div
+              style={{
+                font: "var(--type-label)",
+                color: "var(--text-on-dark-muted)",
+                letterSpacing: "var(--tracking-snug)",
+              }}
+            >
+              {review.triggerSource === "keyword"
+                ? `Triggering phrase · ${review.category}`
+                : `Flagged by the classifier · ${review.category}`}
+            </div>
+            <div
+              style={{
+                marginTop: "var(--space-4)",
+                font: "var(--type-post-title)",
+                letterSpacing: "var(--tracking-snug)",
+                color: "var(--text-on-dark)",
+              }}
+            >
+              &ldquo;{review.trigger}&rdquo;
+            </div>
+          </div>
+        ) : (
+          // No quote to show: the check itself failed, and we escalated rather
+          // than guess. Saying so is better than an empty quotation mark.
+          <div
+            style={{
+              marginTop: "var(--space-8)",
+              paddingTop: "var(--space-6)",
+              borderTop: "1px solid var(--border-inverse)",
+              font: "var(--type-body-sm)",
+              color: "var(--text-on-dark-muted)",
+            }}
+          >
+            We couldn&rsquo;t finish checking this review automatically, so we
+            escalated it rather than draft something we hadn&rsquo;t screened.
+          </div>
+        )}
+      </div>
+
+      <WriteYourOwn {...props} />
+    </div>
+  );
+}
+
+/**
+ * The fourth lane: generation ran twice and the validator blocked both.
+ *
+ * Structurally the escalated slab, because it is the same message — no draft, a
+ * person has to write this — but it is not an escalation and must not claim to
+ * be one. Nothing about the review is dangerous; our own drafting failed.
+ */
+function ManualPane(props: WriteYourOwnProps) {
+  const { review } = props;
+  const [showAttempts, setShowAttempts] = useState(false);
+
+  return (
+    <div>
+      <div
+        style={{
+          background: "var(--surface-inverse)",
+          borderRadius: "var(--radius-band)",
+          padding: "var(--space-10)",
+        }}
+      >
+        <Badge variant="light" size="sm">
+          Blocked by guardrails
+        </Badge>
         <div
           style={{
-            marginTop: "var(--space-8)",
-            paddingTop: "var(--space-6)",
-            borderTop: "1px solid var(--border-inverse)",
+            marginTop: "var(--space-6)",
+            font: "var(--type-card-title)",
+            fontSize: "var(--size-h4)",
+            letterSpacing: "var(--tracking-tight)",
+            color: "var(--text-on-dark)",
           }}
         >
+          We couldn&rsquo;t draft this one within the safety rules.
+        </div>
+        <div
+          style={{
+            marginTop: "var(--space-4)",
+            font: "var(--type-body-sm)",
+            color: "var(--text-on-dark-muted)",
+            maxWidth: "46em",
+          }}
+        >
+          Two attempts both committed you to something we won&rsquo;t publish on
+          your behalf. Rather than soften it a third time and hope, we stopped.
+          Write it yourself.
+        </div>
+
+        {review.blockedAttempts.length > 0 ? (
           <div
             style={{
-              font: "var(--type-label)",
-              color: "var(--text-on-dark-muted)",
-              letterSpacing: "var(--tracking-snug)",
+              marginTop: "var(--space-8)",
+              paddingTop: "var(--space-6)",
+              borderTop: "1px solid var(--border-inverse)",
             }}
           >
-            Triggering phrase · {review.rule}
+            <button
+              type="button"
+              onClick={() => setShowAttempts((v) => !v)}
+              style={{
+                background: "none",
+                border: 0,
+                padding: 0,
+                font: "var(--type-label)",
+                letterSpacing: "var(--tracking-snug)",
+                color: "var(--text-on-dark)",
+                textDecoration: "underline",
+                textUnderlineOffset: 3,
+                cursor: "pointer",
+              }}
+            >
+              {showAttempts ? "Hide what we tried" : "See what we tried"}
+            </button>
+
+            {showAttempts ? (
+              <div style={{ display: "grid", gap: "var(--space-6)", marginTop: "var(--space-6)" }}>
+                {review.blockedAttempts.map((attempt) => (
+                  <div key={attempt.attempt}>
+                    <div
+                      style={{
+                        font: "var(--type-meta)",
+                        color: "var(--text-on-dark-muted)",
+                      }}
+                    >
+                      Attempt {attempt.attempt} · blocked by{" "}
+                      {attempt.brokeRules.length
+                        ? attempt.brokeRules.join(" and ").toLowerCase()
+                        : "the guardrails"}
+                    </div>
+                    <div
+                      style={{
+                        marginTop: "var(--space-3)",
+                        font: "var(--type-body-sm)",
+                        color: "var(--text-on-dark)",
+                        textDecoration: "line-through",
+                        opacity: 0.75,
+                      }}
+                    >
+                      {attempt.text}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
-          <div
-            style={{
-              marginTop: "var(--space-4)",
-              font: "var(--type-post-title)",
-              letterSpacing: "var(--tracking-snug)",
-              color: "var(--text-on-dark)",
-            }}
-          >
-            &ldquo;{review.trigger}&rdquo;
-          </div>
+        ) : null}
+      </div>
+
+      <WriteYourOwn {...props} />
+    </div>
+  );
+}
+
+/** Synced, but the escalation gate could not run, so nothing was drafted. */
+function WaitingPane({
+  configured,
+  resetsAt,
+  ...props
+}: WriteYourOwnProps & { configured: boolean; resetsAt: string }) {
+  return (
+    <div>
+      <div
+        style={{
+          border: "1px solid var(--border-strong)",
+          borderRadius: "var(--radius-card)",
+          padding: "var(--space-8)",
+        }}
+      >
+        <div
+          style={{
+            font: "var(--type-label)",
+            color: "var(--text-muted)",
+            letterSpacing: "var(--tracking-snug)",
+          }}
+        >
+          Not screened yet
+        </div>
+        <div
+          style={{
+            marginTop: "var(--space-5)",
+            font: "var(--type-post-title)",
+            letterSpacing: "var(--tracking-snug)",
+          }}
+        >
+          We haven&rsquo;t checked this review, so we haven&rsquo;t drafted a
+          reply for it.
+        </div>
+        <div
+          style={{
+            marginTop: "var(--space-4)",
+            font: "var(--type-body-sm)",
+            color: "var(--text-muted)",
+            maxWidth: "48em",
+          }}
+        >
+          {configured
+            ? `The daily AI limit was reached before this one came up. It resets at ${resetsAt}, and the next sync will pick it up.`
+            : "No Gemini API key is configured, so the escalation check and the drafting step are both off. Add one and sync again, or write the reply yourself below."}
         </div>
       </div>
 
+      <WriteYourOwn {...props} />
+    </div>
+  );
+}
+
+/**
+ * The shared "a person writes this one" flow. Used by the escalated, blocked,
+ * and unscreened lanes, which differ in why there is no draft but not in what
+ * the operator does about it.
+ */
+function WriteYourOwn({
+  review,
+  writing,
+  ownText,
+  copied,
+  onStartWriting,
+  onStopWriting,
+  onOwnTextChange,
+  onCopy,
+  onMarkHandled,
+  onPublish,
+}: WriteYourOwnProps) {
+  return (
+    <>
       <div
         style={{
           display: "flex",
@@ -865,7 +1159,8 @@ function EscalatedPane({
                   color: "var(--text-muted)",
                 }}
               >
-                We check your reply against these before it publishes.
+                These are the rules we hold the AI to. Your own words are yours
+                — we publish them as written.
               </div>
             </div>
           </div>
@@ -891,13 +1186,41 @@ function EscalatedPane({
               Cancel
             </Button>
           </div>
+
+          <p
+            style={{
+              margin: "var(--space-5) 0 0",
+              maxWidth: "44em",
+              font: "var(--type-meta)",
+              color: "var(--text-faint)",
+            }}
+          >
+            Replying to {review.name}.
+          </p>
         </div>
       ) : null}
-    </div>
+    </>
   );
 }
 
-function DonePane({ review }: { review: Review }) {
+function DonePane({
+  review,
+  actorName,
+  publishesForReal,
+}: {
+  review: Review;
+  actorName: string;
+  publishesForReal: boolean;
+}) {
+  const heading =
+    review.status === "handled"
+      ? "Handled outside the tool — nothing was published"
+      : review.status === "published"
+        ? publishesForReal
+          ? "Published to Google Business Profile"
+          : "Recorded as published · nothing was sent to Google"
+        : "Approved — publishing on the next sync";
+
   return (
     <div
       style={{
@@ -913,19 +1236,33 @@ function DonePane({ review }: { review: Review }) {
           letterSpacing: "var(--tracking-snug)",
         }}
       >
-        {review.status === "published"
-          ? "Published to Google Business Profile"
-          : "Approved — publishing on next sync"}
+        {heading}
       </div>
-      <div
-        style={{
-          marginTop: "var(--space-5)",
-          font: "var(--type-body)",
-          maxWidth: "48em",
-        }}
-      >
-        {review.draftText}
-      </div>
+
+      {review.status === "handled" ? (
+        <div
+          style={{
+            marginTop: "var(--space-5)",
+            font: "var(--type-body)",
+            color: "var(--text-muted)",
+            maxWidth: "48em",
+          }}
+        >
+          You marked this one as dealt with elsewhere. No reply from us is on
+          the profile.
+        </div>
+      ) : (
+        <div
+          style={{
+            marginTop: "var(--space-5)",
+            font: "var(--type-body)",
+            maxWidth: "48em",
+          }}
+        >
+          {review.draftText}
+        </div>
+      )}
+
       <div
         style={{
           marginTop: "var(--space-6)",
@@ -933,13 +1270,32 @@ function DonePane({ review }: { review: Review }) {
           color: "var(--text-faint)",
         }}
       >
-        By Sarah · today ·{" "}
+        By {actorName} ·{" "}
         {review.edited
           ? "edited before publishing"
           : review.lane === "template"
             ? "template, no AI"
-            : "AI draft, unchanged"}
+            : review.lane === "generated"
+              ? "AI draft, unchanged"
+              : "written by hand"}
       </div>
+
+      {review.status === "published" && !publishesForReal ? (
+        <div
+          style={{
+            marginTop: "var(--space-6)",
+            paddingTop: "var(--space-5)",
+            borderTop: "1px solid var(--border-subtle)",
+            font: "var(--type-body-sm)",
+            color: "var(--text-muted)",
+            maxWidth: "48em",
+          }}
+        >
+          This profile is synthetic, so the reply was recorded here and nowhere
+          else. Connecting a real Google Business Profile is what makes this
+          step post publicly — see the README.
+        </div>
+      ) : null}
     </div>
   );
 }

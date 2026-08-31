@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
-import { DeskProvider } from "@/lib/store";
-import { Toast } from "@/components/app/Toast";
 import "./globals.css";
 
 const jakarta = Plus_Jakarta_Sans({
@@ -23,21 +21,18 @@ export default function RootLayout({
   return (
     <html lang="en" className={jakarta.variable}>
       <body>
-        <DeskProvider>
-          <div
-            style={{
-              fontFamily: "var(--font-sans)",
-              color: "var(--text-primary)",
-              background: "var(--surface-page)",
-              minHeight: "100vh",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            {children}
-          </div>
-          <Toast />
-        </DeskProvider>
+        <div
+          style={{
+            fontFamily: "var(--font-sans)",
+            color: "var(--text-primary)",
+            background: "var(--surface-page)",
+            minHeight: "100vh",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {children}
+        </div>
       </body>
     </html>
   );

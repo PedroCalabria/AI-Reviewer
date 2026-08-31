@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import {
   createContext,
   useCallback,
@@ -8,47 +9,51 @@ import {
   useMemo,
   useRef,
   useState,
+  useTransition,
   type ReactNode,
 } from "react";
-import { BASE_LOG, BASE_REVIEWS, TEMPLATES, TONES } from "./data";
-import { REGENERATE_MS, regenerateDraft } from "./draft";
+import {
+  approveAllTemplates,
+  approveAndPublish,
+  cycleTemplate as cycleTemplateAction,
+  markHandled as markHandledAction,
+  regenerateDraft,
+  saveDraftEdit,
+  setActiveLocation,
+  setBrandVoiceDetails,
+  setTone as setToneAction,
+  syncNow as syncNowAction,
+  type ActionResult,
+} from "./actions";
 import type {
+  DeskData,
   InboxFilter,
-  LogEntry,
   LogFilter,
-  LogType,
   Review,
   ToneName,
 } from "./types";
 
+/**
+ * The desk session.
+ *
+ * The server owns the data: every screen under (desk) is rendered from a fresh
+ * read, and every mutation is a server action followed by a refresh. What lives
+ * here is only what the server cannot hold — the row animating out of the
+ * queue, the keystroke that has not been saved yet, the toast.
+ *
+ * Those transient bits are kept in an overlay keyed by review ID rather than in
+ * a copy of the list, so a server refresh flows straight through instead of
+ * being clobbered by stale client state.
+ */
+
 const LEAVE_MS = 220;
 const TOAST_MS = 2600;
-const SYNC_MS = 900;
+/** How long after the last keystroke the draft is persisted. */
+const SAVE_DEBOUNCE_MS = 700;
 
-function seedReviews(): Review[] {
-  return BASE_REVIEWS.map((r) => ({
-    ...r,
-    status: "needs" as const,
-    edited: false,
-    variant: 0,
-    draftText: r.lane === "template" ? TEMPLATES[0] : (r.draft ?? ""),
-    leaving: false,
-  }));
-}
+type Transient = Partial<Pick<Review, "draftText" | "edited" | "leaving">>;
 
-/**
- * The desk is a single in-memory session: the seed reviews come from the last
- * sync and the operator's decisions live here until they are published. A
- * reload starts the queue over, which is what the design shows.
- */
-type DeskState = {
-  reviews: Review[];
-  log: LogEntry[];
-  tone: ToneName;
-  alwaysMention: string;
-  contactEmail: string;
-  autoApprove: boolean;
-  locationId: number;
+type DeskUiState = {
   filter: InboxFilter;
   cursor: number;
   logFilter: LogFilter;
@@ -57,52 +62,32 @@ type DeskState = {
   toast: string | null;
 };
 
-function initialState(): DeskState {
-  return {
-    reviews: seedReviews(),
-    log: BASE_LOG.slice(),
-    tone: "Warm",
-    alwaysMention: "",
-    contactEmail: "",
-    autoApprove: false,
-    locationId: 1,
-    filter: "Needs review",
-    cursor: 0,
-    logFilter: "All",
-    syncing: false,
-    regeneratingId: null,
-    toast: null,
-  };
-}
-
-function stamp(): string {
-  const now = new Date();
-  const month = now.toLocaleString("en-US", { month: "short" });
-  const time = now.toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  return `${month} ${now.getDate()} · ${time}`;
-}
-
 type DeskApi = {
-  state: DeskState;
+  data: DeskData;
+  state: DeskUiState & {
+    reviews: Review[];
+    tone: ToneName;
+    alwaysMention: string;
+    contactEmail: string;
+    locationId: string;
+  };
   visibleReviews: Review[];
   counts: Record<InboxFilter, number>;
   needsCount: number;
   pendingTemplates: number;
-  visibleLog: LogEntry[];
+  visibleLog: DeskData["log"];
+  busy: boolean;
+
   reviewById: (id: string) => Review | undefined;
   neighbours: (id: string) => { prev?: Review; next?: Review; index: number };
+
   setFilter: (filter: InboxFilter) => void;
   setCursor: (updater: (cursor: number) => number) => void;
   setLogFilter: (filter: LogFilter) => void;
   setTone: (tone: ToneName) => void;
-  setAlwaysMention: (value: string) => void;
-  setContactEmail: (value: string) => void;
-  setAutoApprove: (value: boolean) => void;
-  setLocationId: (id: number) => void;
+  saveVoiceDetails: (alwaysMention: string, contactEmail: string) => void;
+  setLocationId: (id: string) => void;
+
   approve: (id: string) => void;
   approveTemplates: () => void;
   markHandled: (id: string) => void;
@@ -123,227 +108,309 @@ function prefersReducedMotion() {
   );
 }
 
-export function DeskProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<DeskState>(initialState);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+export function DeskProvider({
+  data,
+  children,
+}: {
+  data: DeskData;
+  children: ReactNode;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
 
-  useEffect(
-    () => () => {
-      if (toastTimer.current) clearTimeout(toastTimer.current);
-    },
-    [],
+  const [ui, setUi] = useState<DeskUiState>({
+    filter: "Needs review",
+    cursor: 0,
+    logFilter: "All",
+    syncing: false,
+    regeneratingId: null,
+    toast: null,
+  });
+
+  const [transient, setTransient] = useState<Record<string, Transient>>({});
+
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
   );
 
+  useEffect(() => {
+    const timers = saveTimers.current;
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      timers.forEach(clearTimeout);
+    };
+  }, []);
+
   const showToast = useCallback((message: string) => {
-    setState((s) => ({ ...s, toast: message }));
+    setUi((s) => ({ ...s, toast: message }));
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(
-      () => setState((s) => ({ ...s, toast: null })),
+      () => setUi((s) => ({ ...s, toast: null })),
       TOAST_MS,
     );
   }, []);
 
-  const addLog = useCallback((actor: string, type: LogType, text: string) => {
-    setState((s) => ({
-      ...s,
-      log: [{ time: stamp(), actor, type, text }, ...s.log],
-    }));
+  /** Server actions all answer the same shape, so reporting them is one path. */
+  const report = useCallback(
+    (result: ActionResult) => {
+      if (result.ok) {
+        if (result.message) showToast(result.message);
+      } else {
+        showToast(result.error);
+      }
+    },
+    [showToast],
+  );
+
+  const patch = useCallback((id: string, fields: Transient) => {
+    setTransient((t) => ({ ...t, [id]: { ...t[id], ...fields } }));
   }, []);
 
-  const patch = useCallback((id: string, fields: Partial<Review>) => {
-    setState((s) => ({
-      ...s,
-      reviews: s.reviews.map((r) => (r.id === id ? { ...r, ...fields } : r)),
-    }));
+  const clearTransient = useCallback((ids: string[]) => {
+    setTransient((t) => {
+      const next = { ...t };
+      for (const id of ids) delete next[id];
+      return next;
+    });
   }, []);
+
+  const reviews = useMemo(
+    () =>
+      data.reviews.map((review) =>
+        transient[review.id] ? { ...review, ...transient[review.id] } : review,
+      ),
+    [data.reviews, transient],
+  );
+
+  // --- Mutations -----------------------------------------------------------
 
   const approve = useCallback(
     (id: string) => {
-      const review = state.reviews.find((r) => r.id === id);
+      const review = reviews.find((r) => r.id === id);
       if (!review || review.status !== "needs") return;
 
       patch(id, { leaving: true });
-      const finish = () => {
-        setState((s) => ({
-          ...s,
-          reviews: s.reviews.map((r) =>
-            r.id === id ? { ...r, leaving: false, status: "published" } : r,
-          ),
-        }));
-        addLog("Sarah", "You", `Approved and published reply to ${review.name}`);
-      };
-      if (prefersReducedMotion()) finish();
-      else setTimeout(finish, LEAVE_MS);
-      showToast(`Published reply to ${review.name}`);
+
+      startTransition(async () => {
+        const result = await approveAndPublish(id);
+        report(result);
+
+        const settle = () => {
+          clearTransient([id]);
+          router.refresh();
+        };
+        if (prefersReducedMotion() || !result.ok) settle();
+        else setTimeout(settle, LEAVE_MS);
+      });
     },
-    [addLog, patch, showToast, state.reviews],
+    [clearTransient, patch, report, reviews, router],
   );
 
   const approveTemplates = useCallback(() => {
-    const ids = state.reviews
+    const ids = reviews
       .filter((r) => r.lane === "template" && r.status === "needs")
       .map((r) => r.id);
     if (!ids.length) return;
 
-    setState((s) => ({
-      ...s,
-      reviews: s.reviews.map((r) =>
-        ids.includes(r.id) ? { ...r, leaving: true } : r,
-      ),
-    }));
-    const finish = () =>
-      setState((s) => ({
-        ...s,
-        reviews: s.reviews.map((r) =>
-          ids.includes(r.id)
-            ? { ...r, leaving: false, status: "published" }
-            : r,
-        ),
-      }));
-    if (prefersReducedMotion()) finish();
-    else setTimeout(finish, LEAVE_MS);
+    for (const id of ids) patch(id, { leaving: true });
 
-    const plural = ids.length === 1 ? "reply" : "replies";
-    addLog("Sarah", "You", `Approved ${ids.length} template ${plural}`);
-    showToast(`${ids.length} template ${plural} published`);
-  }, [addLog, showToast, state.reviews]);
+    startTransition(async () => {
+      report(await approveAllTemplates());
+      const settle = () => {
+        clearTransient(ids);
+        router.refresh();
+      };
+      if (prefersReducedMotion()) settle();
+      else setTimeout(settle, LEAVE_MS);
+    });
+  }, [clearTransient, patch, report, reviews, router]);
 
   const markHandled = useCallback(
     (id: string) => {
-      const review = state.reviews.find((r) => r.id === id);
-      if (!review) return;
-      patch(id, { status: "approved", draftText: "Handled outside the tool." });
-      addLog(
-        "Sarah",
-        "You",
-        `Marked escalated review from ${review.name} as handled`,
-      );
-      showToast("Marked as handled — no reply published");
+      startTransition(async () => {
+        report(await markHandledAction(id));
+        clearTransient([id]);
+        router.refresh();
+      });
     },
-    [addLog, patch, showToast, state.reviews],
+    [clearTransient, report, router],
   );
 
+  /**
+   * Typing is local and immediate; persistence is debounced. The operator
+   * should never wait on a round trip to see their own keystroke.
+   */
   const editDraft = useCallback(
-    (id: string, text: string) => patch(id, { draftText: text, edited: true }),
+    (id: string, text: string) => {
+      patch(id, { draftText: text, edited: true });
+
+      const existing = saveTimers.current.get(id);
+      if (existing) clearTimeout(existing);
+
+      saveTimers.current.set(
+        id,
+        setTimeout(() => {
+          saveTimers.current.delete(id);
+          void saveDraftEdit(id, text);
+        }, SAVE_DEBOUNCE_MS),
+      );
+    },
     [patch],
   );
 
   const regenerate = useCallback(
     (id: string, choice: string) => {
-      const review = state.reviews.find((r) => r.id === id);
-      if (!review) return;
-      const tone = (
-        choice === "Same tone" ? state.tone : choice
-      ) as ToneName;
+      setUi((s) => ({ ...s, regeneratingId: id }));
 
-      setState((s) => ({ ...s, regeneratingId: id }));
-      const finish = () => {
-        setState((s) => ({
-          ...s,
-          regeneratingId: null,
-          reviews: s.reviews.map((r) =>
-            r.id === id
-              ? { ...r, draftText: regenerateDraft(r, tone), edited: false }
-              : r,
-          ),
-        }));
-        addLog(
-          "AI",
-          "AI",
-          `Regenerated reply for ${review.name} (${tone.toLowerCase()})`,
-        );
-      };
-      if (prefersReducedMotion()) finish();
-      else setTimeout(finish, REGENERATE_MS);
+      startTransition(async () => {
+        const tone = choice === "Same tone" ? data.tone : choice;
+        const result = await regenerateDraft(id, tone);
+        report(result);
+        // The regenerated text comes from the server, so drop the local edit.
+        clearTransient([id]);
+        setUi((s) => ({ ...s, regeneratingId: null }));
+        router.refresh();
+      });
     },
-    [addLog, state.reviews, state.tone],
+    [clearTransient, data.tone, report, router],
   );
 
   const cycleTemplate = useCallback(
     (id: string) => {
-      const review = state.reviews.find((r) => r.id === id);
-      if (!review) return;
-      const next = (review.variant + 1) % TEMPLATES.length;
-      patch(id, { variant: next, draftText: TEMPLATES[next], edited: false });
+      startTransition(async () => {
+        report(await cycleTemplateAction(id));
+        clearTransient([id]);
+        router.refresh();
+      });
     },
-    [patch, state.reviews],
+    [clearTransient, report, router],
   );
 
   const syncNow = useCallback(() => {
-    if (state.syncing) return;
-    setState((s) => ({ ...s, syncing: true }));
-    // Where the Business Profile pull belongs: fetch new reviews for the
-    // selected location, run the triage + draft pass, then merge them in.
-    setTimeout(() => {
-      setState((s) => ({ ...s, syncing: false }));
-      showToast("No new reviews since 09:02");
-    }, SYNC_MS);
-  }, [showToast, state.syncing]);
+    if (ui.syncing) return;
+    setUi((s) => ({ ...s, syncing: true }));
+
+    startTransition(async () => {
+      report(await syncNowAction());
+      setUi((s) => ({ ...s, syncing: false }));
+      router.refresh();
+    });
+  }, [report, router, ui.syncing]);
+
+  const setTone = useCallback(
+    (tone: ToneName) => {
+      startTransition(async () => {
+        report(await setToneAction(tone));
+        router.refresh();
+      });
+    },
+    [report, router],
+  );
+
+  const saveVoiceDetails = useCallback(
+    (alwaysMention: string, contactEmail: string) => {
+      startTransition(async () => {
+        report(await setBrandVoiceDetails(alwaysMention, contactEmail));
+        router.refresh();
+      });
+    },
+    [report, router],
+  );
+
+  const setLocationId = useCallback(
+    (id: string) => {
+      startTransition(async () => {
+        report(await setActiveLocation(id));
+        setTransient({});
+        router.refresh();
+      });
+    },
+    [report, router],
+  );
+
+  // --- Derived -------------------------------------------------------------
 
   const visibleReviews = useMemo(() => {
-    const { filter, reviews } = state;
+    const { filter } = ui;
     return reviews.filter((r) => {
       if (filter === "All") return true;
       if (filter === "Escalated") return r.lane === "escalated";
       if (filter === "Needs review") return r.status === "needs";
-      if (filter === "Approved") return r.status === "approved";
+      if (filter === "Approved")
+        return r.status === "approved" || r.status === "handled";
       if (filter === "Published") return r.status === "published";
       return true;
     });
-  }, [state]);
+  }, [reviews, ui]);
 
-  const counts = useMemo<Record<InboxFilter, number>>(() => {
-    const r = state.reviews;
-    return {
-      "Needs review": r.filter((x) => x.status === "needs").length,
-      Escalated: r.filter((x) => x.lane === "escalated").length,
-      Approved: r.filter((x) => x.status === "approved").length,
-      Published: r.filter((x) => x.status === "published").length,
-      All: r.length,
-    };
-  }, [state.reviews]);
+  const counts = useMemo<Record<InboxFilter, number>>(
+    () => ({
+      "Needs review": reviews.filter((r) => r.status === "needs").length,
+      Escalated: reviews.filter((r) => r.lane === "escalated").length,
+      Approved: reviews.filter(
+        (r) => r.status === "approved" || r.status === "handled",
+      ).length,
+      Published: reviews.filter((r) => r.status === "published").length,
+      All: reviews.length,
+    }),
+    [reviews],
+  );
 
   const visibleLog = useMemo(
     () =>
-      state.log.filter(
-        (e) => state.logFilter === "All" || e.type === state.logFilter,
-      ),
-    [state.log, state.logFilter],
+      data.log.filter((e) => ui.logFilter === "All" || e.type === ui.logFilter),
+    [data.log, ui.logFilter],
   );
 
   const api = useMemo<DeskApi>(
     () => ({
-      state,
+      data,
+      state: {
+        ...ui,
+        reviews,
+        tone: data.tone,
+        alwaysMention: data.alwaysMention,
+        contactEmail: data.contactEmail,
+        locationId: data.activeLocationId,
+      },
       visibleReviews,
       counts,
       needsCount: counts["Needs review"],
-      pendingTemplates: state.reviews.filter(
+      pendingTemplates: reviews.filter(
         (r) => r.lane === "template" && r.status === "needs" && !r.leaving,
       ).length,
       visibleLog,
-      reviewById: (id) => state.reviews.find((r) => r.id === id),
+      busy: pending,
+
+      reviewById: (id) => reviews.find((r) => r.id === id),
+
+      // Stepping through the queue follows the list on screen, not the whole
+      // table, so Next never jumps to a review the active filter hides.
       neighbours: (id) => {
-        const index = state.reviews.findIndex((r) => r.id === id);
+        const index = visibleReviews.findIndex((r) => r.id === id);
+        if (index === -1) {
+          const fallback = reviews.findIndex((r) => r.id === id);
+          return { index: fallback };
+        }
         return {
           index,
-          prev: index > 0 ? state.reviews[index - 1] : undefined,
+          prev: index > 0 ? visibleReviews[index - 1] : undefined,
           next:
-            index >= 0 && index < state.reviews.length - 1
-              ? state.reviews[index + 1]
+            index < visibleReviews.length - 1
+              ? visibleReviews[index + 1]
               : undefined,
         };
       },
-      setFilter: (filter) => setState((s) => ({ ...s, filter, cursor: 0 })),
+
+      setFilter: (filter) => setUi((s) => ({ ...s, filter, cursor: 0 })),
       setCursor: (updater) =>
-        setState((s) => ({ ...s, cursor: updater(s.cursor) })),
-      setLogFilter: (logFilter) => setState((s) => ({ ...s, logFilter })),
-      setTone: (tone) => setState((s) => ({ ...s, tone })),
-      setAlwaysMention: (alwaysMention) =>
-        setState((s) => ({ ...s, alwaysMention })),
-      setContactEmail: (contactEmail) =>
-        setState((s) => ({ ...s, contactEmail })),
-      setAutoApprove: (autoApprove) => setState((s) => ({ ...s, autoApprove })),
-      setLocationId: (locationId) => setState((s) => ({ ...s, locationId })),
+        setUi((s) => ({ ...s, cursor: updater(s.cursor) })),
+      setLogFilter: (logFilter) => setUi((s) => ({ ...s, logFilter })),
+      setTone,
+      saveVoiceDetails,
+      setLocationId,
+
       approve,
       approveTemplates,
       markHandled,
@@ -358,12 +425,18 @@ export function DeskProvider({ children }: { children: ReactNode }) {
       approveTemplates,
       counts,
       cycleTemplate,
+      data,
       editDraft,
       markHandled,
+      pending,
       regenerate,
+      reviews,
+      saveVoiceDetails,
+      setLocationId,
+      setTone,
       showToast,
-      state,
       syncNow,
+      ui,
       visibleLog,
       visibleReviews,
     ],
@@ -376,8 +449,4 @@ export function useDesk(): DeskApi {
   const ctx = useContext(DeskContext);
   if (!ctx) throw new Error("useDesk must be used inside <DeskProvider>");
   return ctx;
-}
-
-export function toneFor(name: ToneName) {
-  return TONES.find((t) => t.name === name) ?? TONES[0];
 }

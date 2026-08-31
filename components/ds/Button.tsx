@@ -51,6 +51,8 @@ export type ButtonProps = {
   disabled?: boolean;
   fullWidth?: boolean;
   onClick?: (event: React.MouseEvent<HTMLElement>) => void;
+  /** Set to "submit" to drive a form action. Links ignore it. */
+  type?: "button" | "submit" | "reset";
   style?: CSSProperties;
   title?: string;
   "aria-label"?: string;
@@ -66,6 +68,7 @@ export function Button({
   disabled = false,
   fullWidth = false,
   onClick,
+  type = "button",
   style,
   ...rest
 }: ButtonProps) {
@@ -127,7 +130,7 @@ export function Button({
 
   return (
     <button
-      type="button"
+      type={type}
       style={css}
       disabled={disabled}
       onClick={onClick}

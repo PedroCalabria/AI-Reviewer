@@ -1,6 +1,15 @@
-import { Button } from "@/components/ds/Button";
+import { redirect } from "next/navigation";
+import { SignInForm } from "@/components/app/SignInForm";
+import { currentTenant } from "@/lib/tenancy";
 
-export default function SignInPage() {
+export default async function SignInPage() {
+  // Somebody already signed in has no business on this screen.
+  if (await currentTenant()) redirect("/inbox");
+
+  const googleConfigured = Boolean(
+    process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET,
+  );
+
   return (
     <div
       style={{
@@ -42,27 +51,7 @@ export default function SignInPage() {
           publishes on its own.
         </p>
 
-        <Button variant="primary" size="lg" fullWidth href="/onboarding">
-          Continue with Google
-        </Button>
-
-        <div
-          style={{
-            height: 1,
-            background: "var(--border-subtle)",
-            margin: "var(--space-8) 0 var(--space-6)",
-          }}
-        />
-        <p
-          style={{
-            margin: 0,
-            font: "var(--type-body-sm)",
-            color: "var(--text-muted)",
-          }}
-        >
-          We request read and reply access to your Business Profile reviews. You
-          approve every reply before it goes out.
-        </p>
+        <SignInForm googleConfigured={googleConfigured} />
       </div>
     </div>
   );

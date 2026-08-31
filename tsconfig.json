@@ -30,5 +30,12 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    // Optional developer tooling. scripts/screenshots.mts imports Playwright,
+    // which is deliberately not a dependency of this project: it is installed
+    // on demand only when the README images need regenerating, so typechecking
+    // it would break a clean install.
+    "scripts"
+  ]
 }
