@@ -1,0 +1,14 @@
+/* Journal X — layout. A single centered column; bands are inset from the page edge. */
+:root {
+  --container-max: 1160px;
+  --container-gutter: 24px;
+  --band-inset: var(--container-gutter);
+  --grid-gutter: var(--gap-grid);
+  --nav-height: 76px;
+  --z-nav: 100;
+  --z-overlay: 200;
+  --z-modal: 300;
+
+  /* Review Desk shell */
+  --sidebar-width: 248px;
+}
