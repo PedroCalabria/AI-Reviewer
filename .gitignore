@@ -55,3 +55,12 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+
+# Prisma
+lib/generated/
+*.db
+*.db-journal
+prisma/dev.db*
+.vercel
+.env*

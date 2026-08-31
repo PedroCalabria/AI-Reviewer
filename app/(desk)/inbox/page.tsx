@@ -5,12 +5,13 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ds/Button";
 import { Chip } from "@/components/app/Chip";
 import { ReviewRow } from "@/components/app/ReviewRow";
-import { INBOX_FILTERS, SYNC_COPY } from "@/lib/data";
+import { INBOX_FILTERS } from "@/lib/data";
 import { useDesk } from "@/lib/store";
 
 export default function InboxPage() {
   const router = useRouter();
   const {
+    data,
     state,
     visibleReviews,
     counts,
@@ -46,7 +47,12 @@ export default function InboxPage() {
           Math.max(0, Math.min(visibleReviews.length - 1, c + (key === "j" ? 1 : -1))),
         );
       } else if (key === "a") {
-        if (here && here.lane !== "escalated" && here.status === "needs") {
+        // Only the lanes that have a draft can be approved from the list.
+        if (
+          here &&
+          (here.lane === "generated" || here.lane === "template") &&
+          here.status === "needs"
+        ) {
           e.preventDefault();
           approve(here.id);
         }
@@ -70,6 +76,8 @@ export default function InboxPage() {
     visibleReviews.length === 0 &&
     state.filter !== "Approved" &&
     state.filter !== "Published";
+
+  const waiting = state.reviews.filter((r) => r.lane === "waiting").length;
 
   return (
     <div style={{ minWidth: 0 }}>
@@ -102,7 +110,9 @@ export default function InboxPage() {
                 color: "var(--text-muted)",
               }}
             >
-              {`${SYNC_COPY.last} · ${SYNC_COPY.next}`}
+              {data.sync.lastSyncedAgo
+                ? `Synced ${data.sync.lastSyncedAgo} · ${data.sync.cadence.toLowerCase()}`
+                : "Not synced yet"}
             </div>
           </div>
 
@@ -150,6 +160,13 @@ export default function InboxPage() {
         </div>
       </div>
 
+      <AiNotice
+        configured={data.ai.configured}
+        exhausted={data.ai.exhausted}
+        resetsAt={data.ai.resetsAt}
+        waiting={waiting}
+      />
+
       {showBulk ? (
         <div
           style={{
@@ -173,7 +190,7 @@ export default function InboxPage() {
           >
             {`${pendingTemplates} template ${templatePlural} ${
               pendingTemplates === 1 ? "is" : "are"
-            } ready — five-star ratings with no text. No AI used.`}
+            } ready — four stars or more, with little or nothing written. No AI used.`}
           </span>
           <Button variant="primary" size="sm" onClick={approveTemplates}>
             {`Approve ${pendingTemplates} ${templatePlural}`}
@@ -230,10 +247,73 @@ export default function InboxPage() {
                 color: "var(--text-faint)",
               }}
             >
-              Next sync today at 15:00
+              {data.sync.cadence}
             </div>
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The state the automation is actually in.
+ *
+ * There are two ways for drafting to stop — no key configured, and the day's
+ * budget spent — and both are worth saying out loud, because the alternative is
+ * an operator staring at reviews with no draft and no explanation.
+ */
+function AiNotice({
+  configured,
+  exhausted,
+  resetsAt,
+  waiting,
+}: {
+  configured: boolean;
+  exhausted: boolean;
+  resetsAt: string;
+  waiting: number;
+}) {
+  if (configured && !exhausted) return null;
+
+  const headline = configured
+    ? `AI drafts paused — daily limit reached, resuming at ${resetsAt}`
+    : "AI drafts are off — no Gemini API key is configured";
+
+  const detail = configured
+    ? "Template replies and keyword escalations are unaffected: neither costs anything."
+    : "Template replies and keyword escalations still run, because neither needs a model. Add GOOGLE_GENERATIVE_AI_API_KEY to .env and sync again.";
+
+  return (
+    <div
+      style={{
+        margin: "var(--space-8) var(--space-10) 0",
+        background: "var(--surface-inverse)",
+        borderRadius: "var(--radius-card)",
+        padding: "var(--space-5) var(--space-6)",
+      }}
+    >
+      <div
+        style={{
+          font: "var(--type-label)",
+          letterSpacing: "var(--tracking-snug)",
+          color: "var(--text-on-dark)",
+        }}
+      >
+        {headline}
+      </div>
+      <div
+        style={{
+          marginTop: "var(--space-3)",
+          font: "var(--type-body-sm)",
+          color: "var(--text-on-dark-muted)",
+          maxWidth: "62em",
+        }}
+      >
+        {detail}
+        {waiting > 0
+          ? ` ${waiting} ${waiting === 1 ? "review is" : "reviews are"} waiting to be screened and will be picked up by the next sync.`
+          : ""}
       </div>
     </div>
   );

@@ -1,0 +1,336 @@
+// AI Review Responder — data model.
+//
+// The datasource is SQLite for local development and Postgres (Neon free tier)
+// for deploys. Switching is a one-line change to `provider` plus a fresh
+// migration; nothing else in this file is dialect-specific. To keep that true:
+//
+//   * No `enum` blocks. SQLite does not support them, so every closed set is a
+//     String column whose allowed values live in lib/constants.ts as a union
+//     type. The application is the enforcement.
+//   * No scalar lists. SQLite has no array type, so lists (themes) are stored
+//     as a JSON string in a `*Json` column.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users      User[]
+  locations  Location[]
+  brandVoice BrandVoice?
+  activity   ActivityLog[]
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  /// Present for credentials sign-in. Null for OAuth-only users.
+  passwordHash  String?
+
+  organizationId String
+  /// The location whose queue this user is working. Set at onboarding, changed
+  /// from the sidebar switcher.
+  activeLocationId String?
+
+  createdAt DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  activeLocation Location?    @relation("ActiveLocation", fields: [activeLocationId], references: [id], onDelete: SetNull)
+  accounts       Account[]
+  sessions       Session[]
+
+  @@index([organizationId])
+}
+
+// --- Auth.js adapter models. Shapes are dictated by @auth/prisma-adapter. ---
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Business data
+// ---------------------------------------------------------------------------
+
+model Location {
+  id             String @id @default(cuid())
+  organizationId String
+  /// The provider's own identifier. For Google Business Profile this is the
+  /// accounts/{account}/locations/{location} resource name.
+  externalId     String
+  name           String
+  address        String
+  /// Incremental sync watermark: the newest provider updatedAt we have seen.
+  /// A sync fetches strictly newer than this rather than scanning the table.
+  syncWatermark  DateTime?
+  createdAt      DateTime  @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  reviews      Review[]
+  syncJobs     SyncJob[]
+  activity     ActivityLog[]
+  activeFor    User[]        @relation("ActiveLocation")
+
+  @@unique([organizationId, externalId])
+  @@index([organizationId])
+}
+
+model Review {
+  id         String @id @default(cuid())
+  locationId String
+  /// The provider's review ID. Unique per location, which is what makes a
+  /// re-run of a sync idempotent: we upsert on this pair and never duplicate.
+  externalId String
+
+  authorName String
+  rating     Int
+  text       String  @default("")
+  /// BCP-47 tag when the provider reports one. Display only.
+  language   String?
+  /// When the customer left the review, per the provider.
+  postedAt   DateTime
+  /// The provider's last-modified stamp; drives the sync watermark.
+  providerUpdatedAt DateTime
+  ingestedAt DateTime @default(now())
+
+  /// ReviewStatus: NEEDS_REVIEW | APPROVED | PUBLISHED | HANDLED_EXTERNALLY
+  ///             | NEEDS_MANUAL_REPLY
+  status String @default("NEEDS_REVIEW")
+
+  /// TriageRoute: ESCALATE | TEMPLATE | GENERATE. Null until triage runs.
+  route String?
+  /// Set on the ESCALATE route only.
+  escalationCategory String?
+  /// 'keyword' or 'classifier' — which source fired.
+  escalationTrigger  String?
+  /// The verbatim span from the review that justified escalating. The detail
+  /// screen underlines it in the review text, so it has to be verbatim.
+  escalationEvidence String?
+
+  /// Classifier result, cached forever. A review is classified once; the
+  /// answer cannot change, so re-running a sync must never re-spend budget.
+  classifiedAt         DateTime?
+  classifierCategory   String?
+  classifierConfidence Float?
+
+  /// Themes extracted during generation, as a JSON array of strings. Empty for
+  /// the TEMPLATE and ESCALATE routes, which never reach the generator.
+  themesJson String @default("[]")
+
+  /// Index into the template set, chosen deterministically from the review ID.
+  templateVariant Int?
+
+  publishedAt DateTime?
+  updatedAt   DateTime @updatedAt
+
+  location        Location         @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  drafts          Draft[]
+  guardrailEvents GuardrailEvent[]
+  activity        ActivityLog[]
+
+  @@unique([locationId, externalId])
+  @@index([locationId, status])
+  @@index([locationId, postedAt])
+}
+
+/// Every attempt, not just the winner. A rejected first generation stays here
+/// alongside the repaired second one, because the UI has to be able to show
+/// what we tried when both fail.
+model Draft {
+  id       String @id @default(cuid())
+  reviewId String
+  /// 1 for the first generation, 2 for the repair attempt.
+  attempt  Int    @default(1)
+  /// DraftSource: AI | TEMPLATE | HUMAN
+  source   String
+
+  /// Exactly what the model (or the template picker) produced.
+  rawOutput       String
+  /// The text after validation passed. Null when this attempt was rejected.
+  validatedOutput String?
+  /// The operator's edit, if they typed over the draft.
+  humanEdited     String?
+
+  toneUsed  String?
+  /// One sentence from the model for the activity log. Never shown as a reply.
+  reasoning String?
+  themesJson String @default("[]")
+
+  passedValidation Boolean @default(false)
+  /// The attempt currently backing the reply box. At most one per review.
+  isCurrent        Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  review          Review           @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  guardrailEvents GuardrailEvent[]
+
+  @@index([reviewId, attempt])
+}
+
+/// One row per validator catch. Drives the "Adjusted: …" note and the
+/// "see what changed" diff on the detail screen.
+model GuardrailEvent {
+  id       String  @id @default(cuid())
+  reviewId String
+  draftId  String?
+
+  /// GuardrailCode: NO_COMPENSATION | NO_FAULT | NO_GUARANTEE | NO_NAMES
+  code    String
+  /// The pattern that matched, kept for debugging and for the log.
+  pattern String
+  /// The offending sentence, quoted back to the model on the repair attempt.
+  excerpt String
+
+  attempt Int    @default(1)
+  /// GuardrailOutcome: REPAIRED | FAILED
+  outcome String
+
+  /// Operator-facing note, e.g. "Adjusted: an offer of compensation was removed."
+  note         String
+  removedText  String?
+  replacedText String?
+
+  createdAt DateTime @default(now())
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  draft  Draft? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+
+  @@index([reviewId])
+}
+
+model SyncJob {
+  id         String @id @default(cuid())
+  locationId String
+
+  /// SyncStatus: queued | running | succeeded | failed
+  status  String @default("queued")
+  /// SyncTrigger: manual | scheduled
+  trigger String @default("manual")
+
+  reviewsFetched Int @default(0)
+  reviewsCreated Int @default(0)
+  reviewsUpdated Int @default(0)
+  escalatedCount Int @default(0)
+  templatedCount Int @default(0)
+  generatedCount Int @default(0)
+  failedCount    Int @default(0)
+
+  /// Readable reason a job failed, shown in the activity log rather than
+  /// buried in server output.
+  error String?
+
+  queuedAt   DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([locationId, queuedAt])
+  @@index([status])
+}
+
+model ActivityLog {
+  id             String  @id @default(cuid())
+  organizationId String
+  locationId     String?
+  reviewId       String?
+
+  /// ActivityType: Sync | AI | Template | Guardrail | Escalation | You
+  type    String
+  /// Display name of who acted: "System", "AI", "Guardrail", or a person.
+  actor   String
+  message String
+
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location?    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  review       Review?      @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  @@index([reviewId])
+}
+
+model BrandVoice {
+  id             String @id @default(cuid())
+  organizationId String @unique
+
+  /// ToneName: Warm | Professional | Concise | Playful
+  tone          String @default("Warm")
+  /// Free text the owner wants worked into every reply, e.g. "family-owned
+  /// since 1998". Passed as a system instruction, never templated in.
+  alwaysMention String @default("")
+  /// Where unhappy customers are pointed. Generated replies use this in place
+  /// of the compensation the validator strips out.
+  contactEmail  String @default("")
+
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+/// One row per UTC day per model. The generator checks this before every call
+/// and stops when the day's budget is spent, rather than discovering the free
+/// tier's ceiling as a wall of 429s.
+model AiUsageCounter {
+  id    String @id @default(cuid())
+  /// UTC date as YYYY-MM-DD. The free tier resets at midnight UTC.
+  day   String
+  model String
+  calls Int    @default(0)
+
+  @@unique([day, model])
+}
