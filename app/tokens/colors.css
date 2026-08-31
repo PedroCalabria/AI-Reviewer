@@ -1,0 +1,49 @@
+/* Journal X — color. The brand is monochrome: pure black type on pure white,
+   full-black feature bands, and photography as the only source of color. */
+:root {
+  /* Base ink ramp */
+  --ink-1000: #000000;
+  --ink-900: #0a0a0a;
+  --ink-800: #292929;
+  --ink-600: #6e6e6e;
+  --ink-500: #9b9b9b;
+  --ink-300: #d9d9d9;
+  --ink-200: #e8e8e8;
+  --ink-100: #f4f4f4;
+  --ink-050: #fafafa;
+  --ink-000: #ffffff;
+
+  /* Alpha ink (over photography / over black) */
+  --alpha-white-92: rgba(255, 255, 255, 0.92);
+  --alpha-white-72: rgba(255, 255, 255, 0.72);
+  --alpha-white-40: rgba(255, 255, 255, 0.4);
+  --alpha-white-16: rgba(255, 255, 255, 0.16);
+  --alpha-black-60: rgba(0, 0, 0, 0.6);
+  --alpha-black-35: rgba(0, 0, 0, 0.35);
+  --alpha-black-12: rgba(0, 0, 0, 0.12);
+
+  /* Semantic text */
+  --text-primary: var(--ink-1000);
+  --text-secondary: var(--ink-800);
+  --text-muted: var(--ink-600);
+  --text-faint: var(--ink-500);
+  --text-on-dark: var(--ink-000);
+  --text-on-dark-muted: var(--alpha-white-72);
+  --text-link: var(--ink-1000);
+  --text-link-hover: var(--ink-600);
+
+  /* Semantic surfaces */
+  --surface-page: var(--ink-000);
+  --surface-subtle: var(--ink-100);
+  --surface-card: var(--ink-000);
+  --surface-inverse: var(--ink-1000);
+  --surface-glass: var(--alpha-white-92);
+  --surface-pill: var(--ink-000);
+  --surface-pill-inverse: var(--ink-1000);
+
+  /* Borders */
+  --border-subtle: var(--ink-200);
+  --border-strong: var(--ink-300);
+  --border-inverse: var(--alpha-white-16);
+  --border-focus: var(--ink-1000);
+}

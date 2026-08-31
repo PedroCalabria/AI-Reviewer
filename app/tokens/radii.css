@@ -1,0 +1,15 @@
+/* Journal X — corner radii. Soft, generous, never sharp; interactive chrome is a full pill. */
+:root {
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 24px;
+  --radius-2xl: 32px;
+  --radius-pill: 999px;
+  --radius-circle: 50%;
+  --radius-card: var(--radius-lg); /* media & content cards */
+  --radius-band: var(--radius-xl); /* full-width black feature bands */
+  --radius-media: var(--radius-lg);
+  --radius-control: var(--radius-pill); /* buttons, inputs, badges */
+}

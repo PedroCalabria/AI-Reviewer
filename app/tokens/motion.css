@@ -1,0 +1,27 @@
+/* Journal X — motion. Short, eased, no bounce. Media zooms; chrome inverts. */
+:root {
+  --dur-instant: 80ms;
+  --dur-fast: 160ms;
+  --dur-base: 240ms;
+  --dur-slow: 400ms;
+  --dur-slower: 700ms;
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-standard: var(--ease-out);
+  --transition-control: background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+  --transition-fade: opacity var(--dur-base) var(--ease-out);
+  --press-scale: 0.97;
+  --hover-opacity: 0.66;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+    --dur-slower: 0ms;
+    --press-scale: 1;
+  }
+}

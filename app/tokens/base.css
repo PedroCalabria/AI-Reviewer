@@ -1,0 +1,96 @@
+/* Journal X — minimal element defaults. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font: var(--type-body);
+  text-wrap: pretty;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--weight-bold);
+}
+
+h1 {
+  font: var(--type-hero);
+  letter-spacing: var(--tracking-tight);
+}
+
+h2 {
+  font: var(--type-section-title);
+  letter-spacing: var(--tracking-tight);
+}
+
+h3 {
+  font: var(--type-card-title);
+  letter-spacing: var(--tracking-tight);
+}
+
+h4 {
+  font-size: var(--size-h4);
+  line-height: var(--leading-snug);
+}
+
+h5 {
+  font: var(--type-post-title);
+  letter-spacing: var(--tracking-snug);
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+  transition: var(--transition-control);
+}
+
+a:hover {
+  color: var(--text-link-hover);
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: var(--font-sans);
+  color: inherit;
+}
+
+::selection {
+  background: var(--ink-1000);
+  color: var(--ink-000);
+}
+
+::placeholder {
+  color: var(--text-faint);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
