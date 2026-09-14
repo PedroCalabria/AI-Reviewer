@@ -1,10 +1,16 @@
 # Review Desk
 
-Review Desk connects to a business's Google Business Profile, pulls in customer
-reviews, and drafts replies with AI. A human approves every reply before it is
-published, and a deterministic guardrail layer sits between the model and the
-approval screen so a draft can never commit the business to a refund, an
-admission of fault, or a promise it can't keep.
+Review Desk syncs customer reviews, triages each one, and drafts replies with AI.
+Reviews that raise a legal threat, a health claim or similar go straight to a
+human with no draft at all. A human approves every reply before it is published,
+and a deterministic guardrail layer sits between the model and the approval
+screen so a draft can never commit the business to a refund, an admission of
+fault, or a promise it can't keep.
+
+Reviews come in through a provider interface. Today it serves a synthetic corpus;
+a Google Business Profile implementation is scaffolded and waits on API access
+that Google grants by application —
+[the constraint](#the-google-business-profile-constraint) explains why.
 
 It solves a specific problem for a small-business owner: reviews accumulate,
 answering them well takes judgement, and answering them badly in public is worse
@@ -72,7 +78,7 @@ Regenerate them with:
 
 ```bash
 npm run dev
-npm install --no-save playwright && npx playwright install chromium
+npx playwright install chromium   # once; Playwright itself is a dev dependency
 npx tsx scripts/screenshots.mts
 ```
 
@@ -168,7 +174,9 @@ testable alone.
 | `GENERATE` → `needs_manual_reply` | Two attempts both broke a rule | 2 | "We couldn't draft this one within the safety rules", both attempts visible |
 | `GENERATE` → paused | No API key, or the day's budget is spent | 0 | "Not screened yet" — no draft, and no claim of one |
 
-The routing type is exactly:
+The routing type, trimmed to the fields that decide the route (the full
+definition in `lib/pipeline/types.ts` also carries the classifier result, the
+failure reason and the template text):
 
 ```ts
 type TriageRoute =
@@ -362,9 +370,10 @@ and what was written instead.
 npm test
 ```
 
-**80 cases** in `lib/pipeline/__tests__/guardrails.test.ts`, running against
+**87 cases** in `lib/pipeline/__tests__/guardrails.test.ts`, running against
 fixed fixtures with a scripted model. No network, no API key, no flake — the
-suite runs in under a second, so it can gate every commit.
+suite runs in a couple of seconds, so it can gate every commit. It does not yet:
+there is no CI workflow, and `.github/workflows/` holds only the scheduled sync.
 
 Covered:
 
@@ -399,7 +408,9 @@ Node.js 20+ and a Postgres database. Neon's free tier needs no card, and
 
 ### Environment
 
-`cp .env.example to .env`. Every value is documented there; the two that matter:
+`cp .env.example .env`. Every variable is listed there, and described in full in
+[DEPLOYMENT.md](DEPLOYMENT.md#environment-variables-in-full). The ones that
+matter locally:
 
 - **`DATABASE_URL`** — required. The pooled connection string if your provider
   offers one. Add `DIRECT_DATABASE_URL` too if it does: migrations need a direct
@@ -418,6 +429,9 @@ Credentials → OAuth client ID → Web application, with redirect URI
 `http://localhost:3000/api/auth/callback/google`. Only basic scopes are
 requested.
 
+`CRON_SECRET` is only needed to call the scheduled sync endpoint — see
+[Scheduling](#scheduling). The `Sync now` button works without it.
+
 ### Commands
 
 ```bash
@@ -427,11 +441,19 @@ npm run dev
 npm test              # the guardrail suite
 npm run lint
 npm run build
+npm run shots         # every screen to shots/, plus a contact sheet to pick from
 ```
 
 > **Deploying this to a real URL?** [DEPLOYMENT.md](DEPLOYMENT.md) is the
 > step-by-step: Neon, the Postgres migration switch, OAuth credentials, Vercel
 > environment variables, the scheduled sync, and a verification checklist.
+
+`shots` captures the wider set — every screen and the states worth showing, at
+2× — and writes `shots/index.html`, a contact sheet linking each thumbnail to its
+full-page capture. It reuses a dev server if one is running, verifies the server
+is this app before photographing anything, and needs Playwright's Chromium
+(`npx playwright install chromium`) and a seeded database.
+`shots/` is gitignored; `docs/screenshots` is the committed subset above.
 
 `db:seed` runs the **real sync path** — the same enqueue, fetch, upsert, triage
 and log that the `Sync now` button uses. It writes no reviews, drafts or
@@ -553,7 +575,7 @@ app/
   tokens/            design tokens, one file per axis
 components/
   ds/                design system primitives
-  app/                desk components
+  app/               desk components
 lib/
   pipeline/          the four stages, and their test suite
   providers/         the review source interface and its two implementations
@@ -565,6 +587,11 @@ lib/
 prisma/
   schema.prisma      the data model
   seed.ts            provisions a tenant, then ingests through the real sync
+scripts/
+  screenshots.mts    the README images in docs/screenshots
+  shots.mts          every screen, plus a contact sheet (npm run shots)
+.github/workflows/
+  sync.yml           the six-hourly scheduled sync
 ```
 
 Two notes on structure. There is no `proxy.ts` (Next 16's rename of
