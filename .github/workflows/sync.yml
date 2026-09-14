@@ -1,0 +1,80 @@
+name: Scheduled review sync
+
+# Why GitHub Actions rather than Vercel Cron:
+#
+# Vercel's Hobby plan allows cron jobs at a once-per-day frequency only. Six
+# hours is a far better fit for a review queue, and Actions gives us that for
+# free on any schedule. It also demonstrates the same external-trigger pattern
+# an operator would use for a self-hosted deployment.
+#
+# To change the frequency, edit the cron expression below. To move to Vercel
+# Cron instead, see the scheduling section of the README.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   APP_URL       https://your-app.vercel.app
+#   CRON_SECRET   the same value as the CRON_SECRET environment variable on the
+#                 deployment. The endpoint returns 401 without it.
+
+on:
+  schedule:
+    # Minute 0, every sixth hour, UTC.
+    - cron: "0 */6 * * *"
+  # So the schedule can be tested without waiting for it.
+  workflow_dispatch:
+
+# Two syncs at once would fetch the same reviews and race on the watermark.
+concurrency:
+  group: review-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Trigger sync
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "APP_URL and CRON_SECRET must both be set as repository secrets."
+            exit 1
+          fi
+
+          # --max-time is generous: a sync of a busy location makes rate-limited
+          # model calls and legitimately takes minutes.
+          status=$(curl --silent --show-error \
+            --max-time 600 \
+            --output response.json \
+            --write-out "%{http_code}" \
+            --request POST \
+            --header "x-cron-secret: ${CRON_SECRET}" \
+            --header "content-type: application/json" \
+            "${APP_URL}/api/cron/sync")
+
+          echo "HTTP ${status}"
+          cat response.json
+          echo
+
+          if [ "${status}" != "200" ]; then
+            echo "Sync failed."
+            exit 1
+          fi
+
+      - name: Summarize
+        if: always()
+        run: |
+          if [ -f response.json ]; then
+            {
+              echo "### Review sync"
+              echo ""
+              echo '```json'
+              cat response.json
+              echo ""
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

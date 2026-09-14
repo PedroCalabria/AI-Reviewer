@@ -27,6 +27,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Portfolio captures
+shots/
+shots.zip
+
 # Testing / coverage
 coverage/
 .nyc_output/
@@ -55,3 +59,14 @@ venv/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+
+# Prisma
+lib/generated/
+*.db
+*.db-journal
+prisma/dev.db*
+.vercel
+.env*
+# Re-allowed after the line above, which would otherwise hide it again.
+!.env.example

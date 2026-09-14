@@ -3,7 +3,7 @@
 import type { CSSProperties } from "react";
 import { Badge } from "@/components/ds/Badge";
 import { Button } from "@/components/ds/Button";
-import type { Review } from "@/lib/types";
+import type { Lane, Review } from "@/lib/types";
 
 const ROW_PAD_Y = 18;
 
@@ -14,6 +14,23 @@ export type ReviewRowProps = {
   onOpen: () => void;
   onApprove: () => void;
 };
+
+/** What the row says is waiting, per lane. */
+const LANE_LABEL: Record<Lane, string> = {
+  generated: "AI draft ready",
+  template: "Template ready",
+  escalated: "Escalated",
+  manual: "Needs your words",
+  waiting: "Waiting to be screened",
+};
+
+/** Only these two lanes have a draft, so only these can be approved inline. */
+export function isApprovable(review: Review): boolean {
+  return (
+    (review.lane === "generated" || review.lane === "template") &&
+    review.status === "needs"
+  );
+}
 
 export function ReviewRow({
   review,
@@ -159,6 +176,7 @@ function StandardRow({
   onOpen: () => void;
   onApprove: () => void;
 }) {
+  const approvable = isApprovable(review);
   const done = review.status !== "needs";
 
   return (
@@ -218,12 +236,12 @@ function StandardRow({
             font: "var(--type-meta)",
             whiteSpace: "nowrap",
             color:
-              review.lane === "generated"
+              review.lane === "generated" || review.lane === "manual"
                 ? "var(--text-primary)"
                 : "var(--text-muted)",
           }}
         >
-          {review.lane === "generated" ? "AI draft ready" : "Template ready"}
+          {LANE_LABEL[review.lane]}
         </span>
         <span
           style={{
@@ -252,9 +270,13 @@ function StandardRow({
                 whiteSpace: "nowrap",
               }}
             >
-              {review.status === "published" ? "Published" : "Approved"}
+              {review.status === "published"
+                ? "Published"
+                : review.status === "handled"
+                  ? "Handled"
+                  : "Approved"}
             </span>
-          ) : (
+          ) : approvable ? (
             <Button
               variant="outline"
               size="sm"
@@ -264,6 +286,19 @@ function StandardRow({
               }}
             >
               Approve
+            </Button>
+          ) : (
+            // Nothing to approve: these lanes have no draft, so offering an
+            // Approve button would be offering to publish an empty reply.
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpen();
+              }}
+            >
+              Open
             </Button>
           )}
         </span>
